@@ -60,6 +60,7 @@ type Config struct {
 	GithubProxy          string   `yaml:"github-proxy"`
 	Proxy                string   `yaml:"proxy"`
 	CallbackScript       string   `yaml:"callback-script"`
+	SubUrlsFailRemove    int      `yaml:"sub-urls-fail-remove"`
 }
 
 var GlobalConfig = &Config{
@@ -69,6 +70,7 @@ var GlobalConfig = &Config{
 	MihomoOverwriteUrl: "http://127.0.0.1:8199/sub/ACL4SSR_Online_Full.yaml",
 	Platforms:          []string{"openai", "youtube", "netflix", "disney", "gemini", "iprisk"},
 	DownloadMB:         20,
+	SubUrlsFailRemove:  3, // 默认连续失败3次后自动移除
 }
 
 //go:embed config.example.yaml

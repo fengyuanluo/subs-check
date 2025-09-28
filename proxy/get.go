@@ -20,6 +20,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// 订阅URL运行时统计
+var (
+	runSuccessUrls sync.Map // 本轮成功的URL
+	runFailedUrls  sync.Map // 本轮失败的URL
+)
+
+// markUrlSuccess 标记URL为成功
+func markUrlSuccess(url string) {
+	runSuccessUrls.Store(url, struct{}{})
+}
+
+// markUrlFailed 标记URL为失败（仅当未成功时）
+func markUrlFailed(url string) {
+	if _, exists := runSuccessUrls.Load(url); !exists {
+		runFailedUrls.Store(url, struct{}{})
+	}
+}
+
+// GetAndResetRunStats 获取并重置本轮统计
+func GetAndResetRunStats() (success []string, failed []string) {
+	// 收集成功的URL
+	runSuccessUrls.Range(func(key, _ any) bool {
+		success = append(success, key.(string))
+		return true
+	})
+
+	// 收集失败的URL
+	runFailedUrls.Range(func(key, _ any) bool {
+		failed = append(failed, key.(string))
+		return true
+	})
+
+	// 重置统计
+	runSuccessUrls = sync.Map{}
+	runFailedUrls = sync.Map{}
+
+	return success, failed
+}
+
 func GetProxies() ([]map[string]any, error) {
 
 	// 解析本地与远程订阅清单
@@ -56,6 +95,7 @@ func GetProxies() ([]map[string]any, error) {
 			data, err := GetDateFromSubs(url)
 			if err != nil {
 				slog.Error(fmt.Sprintf("获取订阅链接错误跳过: %v", err))
+				markUrlFailed(url)
 				return
 			}
 
@@ -70,9 +110,11 @@ func GetProxies() ([]map[string]any, error) {
 				proxyList, err := convert.ConvertsV2Ray(data)
 				if err != nil {
 					slog.Error(fmt.Sprintf("解析proxy错误: %v", err), "url", url)
+					markUrlFailed(url)
 					return
 				}
 				slog.Debug(fmt.Sprintf("获取订阅链接: %s，有效节点数量: %d", url, len(proxyList)))
+				markUrlSuccess(url) // 成功解析，标记为成功
 				for _, proxy := range proxyList {
 					// 只测试指定协议
 					if t, ok := proxy["type"].(string); ok {
@@ -92,14 +134,17 @@ func GetProxies() ([]map[string]any, error) {
 			proxyInterface, ok := con["proxies"]
 			if !ok || proxyInterface == nil {
 				slog.Error(fmt.Sprintf("订阅链接没有proxies: %s", url))
+				markUrlFailed(url)
 				return
 			}
 
 			proxyList, ok := proxyInterface.([]any)
 			if !ok {
+				markUrlFailed(url)
 				return
 			}
 			slog.Debug(fmt.Sprintf("获取订阅链接: %s，有效节点数量: %d", url, len(proxyList)))
+			markUrlSuccess(url) // 成功解析，标记为成功
 			for _, proxy := range proxyList {
 				if proxyMap, ok := proxy.(map[string]any); ok {
 					if t, ok := proxyMap["type"].(string); ok {

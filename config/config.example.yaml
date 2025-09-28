@@ -163,6 +163,8 @@ s3-bucket-lookup: "auto"
 
 # 重试次数(获取订阅失败后重试次数)
 sub-urls-retry: 3
+# 连续失败多少次后自动移除订阅链接，0表示禁用此功能
+sub-urls-fail-remove: 3
 # Github Proxy，获取订阅使用，结尾要带的 /
 # github-proxy: "https://ghfast.top/"
 github-proxy: ""

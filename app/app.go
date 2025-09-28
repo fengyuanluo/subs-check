@@ -15,10 +15,12 @@ import (
 	"github.com/beck-8/subs-check/assets"
 	"github.com/beck-8/subs-check/check"
 	"github.com/beck-8/subs-check/config"
+	proxies "github.com/beck-8/subs-check/proxy"
 	"github.com/beck-8/subs-check/save"
 	"github.com/beck-8/subs-check/utils"
 	"github.com/fsnotify/fsnotify"
 	"github.com/robfig/cron/v3"
+	"gopkg.in/yaml.v3"
 )
 
 // App 结构体用于管理应用程序状态
@@ -245,6 +247,135 @@ func (app *App) checkProxies() error {
 	// 执行回调脚本
 	utils.ExecuteCallback(len(results))
 
+	// 处理订阅生命周期管理
+	if err := app.handleSubsLifecycle(); err != nil {
+		slog.Error("处理订阅生命周期失败", "error", err)
+	}
+
+	return nil
+}
+
+// handleSubsLifecycle 处理订阅生命周期管理
+func (app *App) handleSubsLifecycle() error {
+	// 如果功能被禁用，直接返回
+	if config.GlobalConfig.SubUrlsFailRemove <= 0 {
+		return nil
+	}
+
+	// 获取本轮统计
+	successUrls, failedUrls := proxies.GetAndResetRunStats()
+
+	if len(successUrls) == 0 && len(failedUrls) == 0 {
+		return nil // 没有统计数据
+	}
+
+	// 获取配置目录
+	configDir := filepath.Dir(app.configPath)
+
+	// 加载状态文件
+	state, err := LoadSubsState(configDir)
+	if err != nil {
+		return fmt.Errorf("加载订阅状态失败: %w", err)
+	}
+
+	// 更新失败计数
+	for _, url := range successUrls {
+		state.UpdateFailCount(url, false) // 成功
+	}
+	for _, url := range failedUrls {
+		state.UpdateFailCount(url, true) // 失败
+	}
+
+	// 获取需要移除的URL
+	urlsToRemove := state.GetFailedUrls(config.GlobalConfig.SubUrlsFailRemove)
+
+	if len(urlsToRemove) > 0 {
+		slog.Warn("发现需要移除的订阅", "count", len(urlsToRemove), "urls", urlsToRemove)
+
+		// 从配置文件中移除这些URL
+		if err := app.removeUrlsFromConfig(urlsToRemove); err != nil {
+			return fmt.Errorf("从配置文件移除URL失败: %w", err)
+		}
+
+		// 清理状态记录
+		state.CleanupUrls(urlsToRemove)
+
+		slog.Info("已自动移除失败订阅", "count", len(urlsToRemove))
+	}
+
+	// 保存状态文件
+	if err := state.SaveToFile(configDir); err != nil {
+		return fmt.Errorf("保存订阅状态失败: %w", err)
+	}
+
+	return nil
+}
+
+// removeUrlsFromConfig 从配置文件中移除指定的URL
+func (app *App) removeUrlsFromConfig(urlsToRemove []string) error {
+	// 读取配置文件
+	yamlFile, err := os.ReadFile(app.configPath)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	// 解析为map以保持格式
+	var yamlData map[string]any
+	if err := yaml.Unmarshal(yamlFile, &yamlData); err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+
+	// 获取sub-urls数组
+	subUrlsInterface, exists := yamlData["sub-urls"]
+	if !exists {
+		return nil // 没有sub-urls字段，无需处理
+	}
+
+	subUrls, ok := subUrlsInterface.([]any)
+	if !ok {
+		return fmt.Errorf("sub-urls字段格式错误")
+	}
+
+	// 创建要移除的URL集合
+	removeSet := make(map[string]bool)
+	for _, url := range urlsToRemove {
+		removeSet[url] = true
+	}
+
+	// 过滤掉要移除的URL
+	var filteredUrls []any
+	removedCount := 0
+	for _, urlInterface := range subUrls {
+		if urlStr, ok := urlInterface.(string); ok {
+			if !removeSet[urlStr] {
+				filteredUrls = append(filteredUrls, urlInterface)
+			} else {
+				removedCount++
+			}
+		} else {
+			filteredUrls = append(filteredUrls, urlInterface)
+		}
+	}
+
+	if removedCount == 0 {
+		return nil // 没有URL被移除
+	}
+
+	// 更新配置
+	yamlData["sub-urls"] = filteredUrls
+
+	// 序列化回YAML
+	updatedYaml, err := yaml.Marshal(yamlData)
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+
+	// 写回文件
+	if err := os.WriteFile(app.configPath, updatedYaml, 0644); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
+	slog.Info("已从配置文件移除订阅", "removed", removedCount, "remaining", len(filteredUrls))
 	return nil
 }
 
